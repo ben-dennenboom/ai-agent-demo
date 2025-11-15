@@ -1,5 +1,6 @@
 # ai-agent-demo
-This code runs an AI agent. 
+These examples interact with OpenAI. 
+Simple conversation with the LLM and also interaction in Agent mode. 
 
 ## How to run
 Install the dependencies
@@ -12,7 +13,13 @@ Set your env files
 cp .env.example .env
 ```
 
-Run the demo
+## Examples
+### Conversation with a LLM
+```
+php src/bin/llm.php
+```
+
+### Interact in Agent mode
 ```
 php src/bin/agent.php
 ```

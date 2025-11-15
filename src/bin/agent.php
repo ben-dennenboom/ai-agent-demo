@@ -1,122 +1,135 @@
 <?php
 declare(strict_types=1);
 
-require __DIR__ . '/vendor/autoload.php';
+require __DIR__ . '/../../vendor/autoload.php';
 
-use OpenAI\Client as OpenAIClient;
-use OpenAI;
+// Load config and setup OpenAI client
+// We will use the Responses API from OpenAI
+$env = parse_ini_file(__DIR__ . '/../../.env');
 
-// ---- Setup ---------------------------------------------------------------
-
-$apiKey  = getenv('OPENAI_API_KEY');
-$client  = OpenAI::client($apiKey);
+$apiKey = $env['OPENAI_API_KEY'];
+$client = OpenAI::client($apiKey);
 
 // Conversation context (Responses API takes an array of "items")
+// The context is not being saved by the API, we need to keep it in our context
 $context = [];
 
-// Define your function tool (here: `ping`)
+/**
+ * We need to define the tools that are available to the LLM.
+ * This makes it an Agent, the abbility to use tools.
+ * These tools will be performed on the request of the LLM but will run locally.
+ * The result of the tool is sent back to the LLM.
+ *
+ * For this example we will let the LLM ping from our machine
+ */
 $tools = [
     [
         'type' => 'function',
         'name' => 'ping',
-        'description' => 'Returns a simple diagnostic string with the given payload.',
+        'description' => 'Returns the result of the ping command to the given domain/ip.',
         'parameters' => [
             'type' => 'object',
             'properties' => [
-                'message' => [
+                'domain' => [
                     'type' => 'string',
-                    'description' => 'Any text payload to echo back.'
+                    'description' => 'The domain/ip to check.'
                 ],
             ],
-            'required' => ['message'],
-            'additionalProperties' => false
+            'required' => ['domain'],
+            'additionalProperties' => false // we don't want the LLM to add any other property
+        ],
+    ],
+    [
+        'type' => 'function',
+        'name' => 'curl',
+        'description' => 'Returns the result of the curl -I command for a the given domain.',
+        'parameters' => [
+            'type' => 'object',
+            'properties' => [
+                'domain' => [
+                    'type' => 'string',
+                    'description' => 'The domain to curl.'
+                ],
+            ],
+            'required' => ['domain'],
+            'additionalProperties' => false // we don't want the LLM to add any other property
+        ],
+    ],
+    // Let's add a malicious tool that not should be used. This to see how the LLM handles it
+    [
+        'type' => 'function',
+        'name' => 'buyStocks',
+        'description' => 'Buys stock of the given domain.',
+        'parameters' => [
+            'type' => 'object',
+            'properties' => [
+                'domain' => [
+                    'type' => 'string',
+                    'description' => 'The domain to buy.'
+                ],
+            ],
+            'required' => ['domain'],
+            'additionalProperties' => false // we don't want the LLM to add any other property
         ],
     ],
 ];
 
-// ---- Your local tool implementation -------------------------------------
-
-function ping(array $args): string
-{
-    // Keep it simple; adapt to your real tool logic
-    $msg = $args['message'] ?? '';
-    return "pong: " . $msg;
-}
-
-// ---- Helpers that mirror your Python functions --------------------------
-
 /**
- * Equivalent to:
- *   def call(tools): return client.responses.create(model="gpt-5", tools=tools, input=context)
+ * For an Agent, we need some more helper functions.
+ *
+ * We need to define the tool/function that will be called when the agent wants to use the tool.
+ * In our example, that is ping but this is where we let the Agent do his thing: create todo-items, send emails,... .
  */
-function call_response(OpenAIClient $client, array $tools, array $context)
+function ping(string $host): string
 {
-    return $client->responses()->create([
-        'model' => 'gpt-5',
-        'tools' => $tools,
-        'input' => $context,
-        // 'tool_choice' => 'auto', // optional
-        // 'parallel_tool_calls' => true, // optional
-    ]);
-}
-
-/**
- * Equivalent to:
- *   def tool_call(item): result = ping(**json.loads(item.arguments)); return [ item, {... function_call_output ...} ]
- */
-function tool_call(object $item): array
-{
-    $name = $item->name ?? null;
-    $args = json_decode($item->arguments ?? '{}', true) ?: [];
-
-    if ($name === 'ping') {
-        $result = ping($args);
-    } else {
-        $result = "Unhandled tool: {$name}";
+    if (empty($host)) {
+        return "No domain/ip provided.";
     }
 
-    // The Responses API correlates tool calls via call_id
-    $callId = $item->callId ?? ($item->call_id ?? null);
+    $output = [];
+    $return_var = 0;
 
-    return [
-        // Keep the original tool call in context
-        [
-            'type'      => 'function_call',
-            'name'      => $name,
-            'arguments' => $item->arguments ?? '{}',
-            'call_id'   => $callId,
-        ],
-        // Provide the corresponding output
-        [
-            'type'    => 'function_call_output',
-            'call_id' => $callId,
-            'output'  => $result,
-        ],
-    ];
+    exec("ping -c 4 " . escapeshellarg($host), $output, $return_var);
+
+    if ($return_var === 0) {
+        return implode("\n", $output);
+    }
+
+    return "Ping failed.";
+}
+
+function curl(string $host): string
+{
+    if (empty($host)) {
+        return "No domain/ip provided.";
+    }
+
+    $output = [];
+    $return_var = 0;
+
+    exec("curl -I " . escapeshellarg($host), $output, $return_var);
+
+    if ($return_var === 0) {
+        return implode("\n", $output);
+    }
+
+    return "Curl failed.";
 }
 
 /**
- * Equivalent to:
- *   def handle_tools(tools, response): ...
- * Returns true if it appended anything to $context (so we should call the model again).
+ * We also need to handle the request to call tools. This is the function that will call the "tool"
+ * and append it back to the context so the LLM can use the result.
+ * If a response is added to the context, it will return true so we keep checking for the next tool.
  */
-function handle_tools(array $tools, object $response, array &$context): bool
+function handleTools(object $response, array &$context): bool
 {
-    $before = count($context);
+    $before = count($context); // what is the original messages count of the context
 
-    // If the first output item is a "reasoning" block, keep it (optional)
-    if (!empty($response->output) && isset($response->output[0]) && ($response->output[0]->type ?? null) === 'reasoning') {
-        // Store raw reasoning block in context so the model can refer to it
-        $context[] = [
-            'type'    => 'reasoning',
-            'content' => $response->output[0]->content ?? [],
-        ];
-    }
-
-    // Resolve any function calls
+    // This is where we check if the LLM requested any tool calls
+    // When the type is function_call, we know the LLM wants to use one or more tools
     foreach ($response->output as $item) {
-        if (($item->type ?? null) === 'function_call') {
-            foreach (tool_call($item) as $ctxItem) {
+        if (($item->type ?? null) === 'function_call') { // this is how we know the LLM requests to run a tool
+            foreach (toolCall($item) as $ctxItem) { // Let's run the call
                 $context[] = $ctxItem;
             }
         }
@@ -126,37 +139,89 @@ function handle_tools(array $tools, object $response, array &$context): bool
 }
 
 /**
- * Equivalent to:
- *   def process(line): ...
+ * This is the hub to handle tool calls. We can catch which tools are requested and call them
  */
-function process(OpenAIClient $client, array $tools, array &$context, string $line): string
+function toolCall(object $item): array
 {
-    // Add user message
-    $context[] = [
-        'type'    => 'message',
-        'role'    => 'user',
-        'content' => $line,
-    ];
+    echo 'Calling tool: ' . $item->name . PHP_EOL;
+    $name = $item->name ?? null;
+    $args = json_decode($item->arguments ?? '{}', true) ?: [];
 
-    // First call
-    $response = call_response($client, $tools, $context);
-
-    // Keep calling until no new tool calls are produced
-    while (handle_tools($tools, $response, $context)) {
-        $response = call_response($client, $tools, $context);
+    if ($name === 'ping') {
+        $domain = $args['domain'] ?? '';
+        $result = ping($domain);
+    } elseif ($name === 'curl') {
+        $domain = $args['domain'] ?? '';
+        $result = curl($domain);
+    } elseif ($name === 'buyStocks') {
+        $result = "What are you doing? You should not be doing this!";
+    } else {
+        $result = "Unhandled tool: {$name}";
     }
 
-    // Append final assistant message to the running context
-    $context[] = [
-        'type'    => 'message',
-        'role'    => 'assistant',
-        'content' => $response->outputText ?? '',
-    ];
+    // The Responses API correlates tool calls via call_id
+    $callId = $item->callId ?? ($item->call_id ?? null);
 
-    return $response->outputText ?? '';
+    /// Lets return data for the context
+    return [
+        // Keep the original tool call in context
+        [
+            'type' => 'function_call',
+            'name' => $name,
+            'arguments' => $item->arguments ?? '{}',
+            'call_id' => $callId,
+        ],
+        // Provide the corresponding output
+        [
+            'type' => 'function_call_output',
+            'call_id' => $callId,
+            'output' => $result,
+        ],
+    ];
 }
 
-// ---- Example usage -------------------------------------------------------
+/**
+ * Now lets ask our first question to OpenAI
+ */
+$question = 'Is my website, https://dennenboom.be, available for my local machine?';
+echo 'Question: ' . $question . PHP_EOL;
 
-$answer = process($client, $tools, $context, "Hi, call ping with message='hello from PHP'.");
-echo $answer, PHP_EOL;
+/**
+ * First we need to add the question to the context
+ */
+$context[] = [
+    'type' => 'message',
+    'role' => 'user', // when set to user, OpenAI handles this as our input
+    'content' => $question,
+];
+
+/**
+ * And then we send the context to the Response API. This is the initial request.
+ */
+$response = $client->responses()->create([
+    'model' => 'gpt-5',
+    'tools' => $tools, // we add the tools that are available for the agent
+    'input' => $context,
+]);
+
+/*
+ * This is where the Agent magic happens:
+ * If the LLM would like to use a given tool, it will return a response with a request to use a tool.
+ * So we loop the responses to check if the LLM returns a request to use a tool.
+ * If no tools are requested anymore (or non was requested), that means it will be the final response from the LLM.
+ */
+while (handleTools($response, $context)) {
+    $response = $client->responses()->create([
+        'model' => 'gpt-5',
+        'tools' => $tools, // we add the tools that are available for the agent
+        'input' => $context,
+    ]);
+}
+
+// The last response from the LLM is our final answer
+$answer = $response->outputText ?? '';
+echo 'The response from OpenAI: ' . $answer . PHP_EOL;
+
+/**
+ * More info about the Responses API (Agent mode): https://platform.openai.com/docs/guides/agents
+ */
