@@ -7,7 +7,7 @@ Install the dependencies
 
 ```
 composer require openai-php/client guzzlehttp/guzzle
-´´´
+```
 
 Set your env files
 ```
