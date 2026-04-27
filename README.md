@@ -4,9 +4,10 @@ Simple conversation with the LLM and also interaction in Agent mode.
 
 ## How to run
 Install the dependencies
-´´´
+
+```
 composer require openai-php/client guzzlehttp/guzzle
-´´´
+```
 
 Set your env files
 ```
