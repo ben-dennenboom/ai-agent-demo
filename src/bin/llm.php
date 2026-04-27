@@ -16,8 +16,8 @@ $context = [];
 /**
  * Now lets ask our first question to OpenAI
  */
-$firstQuestion = 'Give a qoute from The Office US?';
-echo 'First Question: ' . $firstQuestion . PHP_EOL;
+$firstQuestion = 'Give a qoute from The Office?';
+echo 'Me: ' . $firstQuestion . PHP_EOL;
 
 /**
  * First we need to add the question to the context
@@ -38,7 +38,7 @@ $response = $client->responses()->create([
 
 // The API response with an object
 $firstAnswer = $response->outputText ?? '';
-echo 'First answer from OpenAI: ' . $firstAnswer . PHP_EOL;
+echo 'OpenAI: ' . $firstAnswer . PHP_EOL;
 
 /**
  * The API is stateless so we need to keep track of the history ourselves.
@@ -51,8 +51,8 @@ $context[] = [
 ];
 
 // Let's ask another question
-$secondQuestion = 'Give another one?';
-echo 'Second question: ' . $secondQuestion . PHP_EOL;
+$secondQuestion = 'Ok, give me another one?';
+echo 'Me: ' . $secondQuestion . PHP_EOL;
 
 /**
  * if you would reset the context,
@@ -77,7 +77,7 @@ $response = $client->responses()->create([
     'input' => $context,
 ]);
 $secondAnswer = $response->outputText ?? '';
-echo 'Second answer from OpenAI: ' . $secondAnswer . PHP_EOL;
+echo 'OpenAI: ' . $secondAnswer . PHP_EOL;
 
 /**
  * More info about the Responses API: https://platform.openai.com/docs/guides/text
